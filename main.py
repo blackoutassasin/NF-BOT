@@ -37,7 +37,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-# Configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
 BKASH_NUMBER = os.getenv('BKASH_NUMBER')
