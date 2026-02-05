@@ -41,8 +41,8 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))  # Set your Telegram User ID
 BKASH_NUMBER = os.getenv('BKASH_NUMBER', '01XXXXXXXXX')
 NAGAD_NUMBER = os.getenv('NAGAD_NUMBER', '01XXXXXXXXX')
-PRODUCT_PRICE = 50
-DATABASE_PATH = 'netflix_bot.db'
+PRODUCT_PRICE = 70
+DATABASE_PATH = os.getenv('DATABASE_PATH', 'netflix_bot.db')
 
 # Conversation states
 WAITING_PAYMENT_SCREENSHOT = 1
