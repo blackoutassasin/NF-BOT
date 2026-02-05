@@ -1,6 +1,9 @@
 """
-Netflix Profile Sales Bot - Advanced Manual Verification
-Features: Screenshot -> TrxID -> Last 4 Digits -> Admin Approval (Reason/Skip)
+Netflix Profile Sales Bot - Final Pro Version
+Features:
+1. Rejection with 'Contact Admin' button
+2. Image Support in Request/Contact messages
+3. Clean UI & Manual Verification
 """
 
 import os
@@ -9,6 +12,7 @@ import logging
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -35,14 +39,12 @@ PRODUCT_PRICE = 50
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'netflix_bot.db')
 
 # --- STATES ---
-# User Flow States
 WAITING_SCREENSHOT = 1
 WAITING_TRX_ID = 2
 WAITING_LAST_4 = 3
-
-# Admin Flow States (For writing reject reason)
 ADMIN_WAITING_REASON = 4
 ADMIN_WAITING_BULK = 5
+WAITING_SUPPORT_MESSAGE = 6  # Handles both Product Request & Admin Contact
 
 # --- DATABASE INIT ---
 def init_database():
@@ -50,6 +52,8 @@ def init_database():
         os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
+    
+    # Profiles table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +66,8 @@ def init_database():
             sold_to_user_id INTEGER
         )
     ''')
+    
+    # Sales table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,30 +83,143 @@ def init_database():
     conn.commit()
     conn.close()
 
-# --- USER BUYING FLOW ---
+# --- USER FLOWS ---
 
 class NetflixBot:
     
     @staticmethod
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        keyboard = [[InlineKeyboardButton("🎬 Buy Netflix Profile (50 TK)", callback_data='buy_netflix')]]
+        
         welcome_text = (
-            f"👋 Hello {user.first_name}!\n\n"
-            f"🎬 *Netflix Premium Profile*\n"
-            f"💰 Price: *{PRODUCT_PRICE} BDT*\n"
-            f"📅 Validity: 1 Month\n"
-            f"🛡️ Protection: PIN Protected\n\n"
-            f"Click 'Buy' to purchase 👇"
+            f"👋 *Welcome, {user.first_name}!*\n"
+            f"──────────────────\n"
+            f"🤖 *Automated Digital Shop*\n\n"
+            f"Choose an option below to get started:\n"
+            f"──────────────────"
         )
-        await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-    
+        
+        # MAIN MENU BUTTONS
+        keyboard = [
+            [InlineKeyboardButton("🛒 Order Netflix (50 TK)", callback_data='buy_netflix')],
+            [InlineKeyboardButton("📝 Request Product", callback_data='contact_support_req')],
+            [InlineKeyboardButton("📞 Contact Owner", callback_data='contact_owner_info')]
+        ]
+        
+        await update.message.reply_text(
+            welcome_text, 
+            parse_mode=ParseMode.MARKDOWN, 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    # --- OWNER INFO (Just Text) ---
+    @staticmethod
+    async def contact_owner_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        info_text = (
+            "👨‍💻 *Owner Contact*\n"
+            "────────────────\n"
+            "📞 Phone: +8801784346353\n"
+            "✈️ Telegram: @YourUsername\n" # Change this
+            "────────────────\n"
+            "Click below to send a message directly via Bot."
+        )
+        keyboard = [
+            [InlineKeyboardButton("💬 Contact Admin For Netflix", callback_data='contact_support_help')],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data='back_to_start')]
+        ]
+        await query.edit_message_text(info_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    @staticmethod
+    async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        await NetflixBot.start(update, context)
+
+    # --- SUPPORT MESSAGE FLOW (Handles Text & Photos) ---
+    @staticmethod
+    async def start_support_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        msg = (
+            "📬 *Contact Admin / Request Product*\n"
+            "────────────────\n"
+            "Please send your message now.\n"
+            "✅ You can send **Text** or **Photo/Screenshot**.\n\n"
+            "✍️ *Waiting for your input...*"
+        )
+        await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+        return WAITING_SUPPORT_MESSAGE
+
+    @staticmethod
+    async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        
+        # Prepare Admin Notification
+        admin_header = (
+            f"🔔 *New User Message*\n"
+            f"────────────────\n"
+            f"👤 Name: {user.full_name}\n"
+            f"🆔 ID: `{user.id}`\n"
+            f"🔗 Username: @{user.username if user.username else 'None'}\n"
+            f"────────────────\n"
+            f"📩 *Message Content:*"
+        )
+
+        # Check if photo or text
+        if update.message.photo:
+            photo_id = update.message.photo[-1].file_id
+            caption = update.message.caption if update.message.caption else "No caption provided."
+            full_caption = f"{admin_header}\n{caption}"
+            
+            # Send Photo to Admin
+            try:
+                await context.bot.send_photo(
+                    chat_id=ADMIN_USER_ID, 
+                    photo=photo_id, 
+                    caption=full_caption, 
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except: pass
+            
+        elif update.message.text:
+            text_content = update.message.text
+            full_text = f"{admin_header}\n{text_content}"
+            
+            # Send Text to Admin
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_USER_ID, 
+                    text=full_text, 
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except: pass
+        else:
+            await update.message.reply_text("❌ Unsupported format. Send Text or Photo.")
+            return WAITING_SUPPORT_MESSAGE
+        
+        # Reply to User
+        await update.message.reply_text(
+            "✅ *Message Sent Successfully!*\n\n"
+            "Admin has received your message/photo.\n"
+            "They will contact you soon.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Show Menu Button
+        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_start')]]
+        await update.message.reply_text("Go back to menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    # --- BUY FLOW (Unchanged Logic) ---
     @staticmethod
     async def buy_netflix(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         
-        # Check Stock
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM profiles WHERE status = 'unsold'")
@@ -108,190 +227,148 @@ class NetflixBot:
         conn.close()
         
         if stock == 0:
-            await query.edit_message_text("❌ *Out of Stock!* Please come back later.", parse_mode='Markdown')
+            await query.edit_message_text(
+                "🚫 *Out of Stock*\n\nWe are currently restocking.", 
+                parse_mode=ParseMode.MARKDOWN
+            )
             return ConversationHandler.END
         
         msg = (
-            f"💳 *Payment Instructions*\n\n"
-            f"Send *{PRODUCT_PRICE} TK* to:\n"
-            f"🚀 *bKash:* `{BKASH_NUMBER}` (Send Money)\n"
-            f"🚀 *Nagad:* `{NAGAD_NUMBER}` (Send Money)\n\n"
-            f"👉 *Step 1:* After payment, send the **Screenshot** here."
+            f"💳 *Payment Gateway*\n"
+            f"──────────────────\n"
+            f"💸 Amount: `{PRODUCT_PRICE} TK`\n"
+            f"🚀 bKash: `{BKASH_NUMBER}`\n"
+            f"🚀 Nagad: `{NAGAD_NUMBER}`\n\n"
+            f"📸 *Step 1/3:* Upload Payment Screenshot."
         )
-        await query.edit_message_text(msg, parse_mode='Markdown')
+        keyboard = [[InlineKeyboardButton("🔙 Cancel", callback_data='cancel_flow')]]
+        await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
         return WAITING_SCREENSHOT
 
     @staticmethod
     async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message.photo:
-            await update.message.reply_text("❌ Please send a PHOTO (Screenshot).")
+            await update.message.reply_text("⚠️ Send a Screenshot Photo.")
             return WAITING_SCREENSHOT
-        
-        # Save photo file_id to context
         context.user_data['payment_photo'] = update.message.photo[-1].file_id
-        
-        await update.message.reply_text(
-            "✅ Screenshot Received.\n\n"
-            "👉 *Step 2:* Please type the **Transaction ID** (TrxID) text now.\n"
-            "(Example: 9G45H6J7K8)",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("🆔 *Step 2/3:* Enter Transaction ID (TrxID).", parse_mode=ParseMode.MARKDOWN)
         return WAITING_TRX_ID
 
     @staticmethod
     async def receive_trx_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        trx_id = update.message.text.strip().upper()
-        context.user_data['payment_trx'] = trx_id
-        
-        await update.message.reply_text(
-            "✅ TrxID Saved.\n\n"
-            "👉 *Step 3:* Enter the **Last 4 Digits** of the number you sent money from.\n"
-            "(Example: 4635)",
-            parse_mode='Markdown'
-        )
+        context.user_data['payment_trx'] = update.message.text.strip().upper()
+        await update.message.reply_text("📱 *Step 3/3:* Enter Last 4 Digits.", parse_mode=ParseMode.MARKDOWN)
         return WAITING_LAST_4
 
     @staticmethod
     async def receive_last_4(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_4 = update.message.text.strip()
-        context.user_data['payment_last4'] = last_4
         user = update.effective_user
         
-        # Notify User
-        await update.message.reply_text(
-            "✅ *Order Submitted!* \n\n"
-            "Admin is checking your details manually.\n"
-            "Please wait...",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("⏳ *Verifying...* Please wait for Admin approval.", parse_mode=ParseMode.MARKDOWN)
 
-        # Prepare Admin Report
-        photo_id = context.user_data['payment_photo']
-        trx_id = context.user_data['payment_trx']
-        
+        # Admin Receipt
         caption = (
-            f"🛒 *New Order Request*\n\n"
-            f"👤 *User ID:* `{user.id}`\n"
-            f"📛 *User Name:* @{user.username if user.username else 'None'}\n"
-            f"📦 *Quantity:* 1 Profile\n\n"
-            f"🆔 *User TrxID:* `{trx_id}`\n"
-            f"📱 *User Paid Last 4:* `{last_4}`"
+            f"🧾 *New Order*\n"
+            f"👤: {user.full_name} (`{user.id}`)\n"
+            f"💰: {PRODUCT_PRICE} TK\n"
+            f"🆔 TrxID: `{context.user_data['payment_trx']}`\n"
+            f"📱 Last 4: `{last_4}`"
         )
-
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user.id}'),
-                InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user.id}')
-            ]
-        ]
-
-        # Send to Admin
-        await context.bot.send_photo(
-            chat_id=ADMIN_USER_ID,
-            photo=photo_id,
-            caption=caption,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
+        keyboard = [[InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user.id}'), InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user.id}')]]
+        await context.bot.send_photo(ADMIN_USER_ID, context.user_data['payment_photo'], caption=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
 
     @staticmethod
     async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("❌ Operation Cancelled.")
+        await update.message.reply_text("❌ Cancelled.")
         return ConversationHandler.END
-
 
 # --- ADMIN LOGIC ---
 
 class AdminActions:
-    
     @staticmethod
     async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         data = query.data
         
-        # --- APPROVE FLOW ---
+        if data == 'cancel_flow':
+            await query.edit_message_text("❌ Order cancelled.")
+            return ConversationHandler.END
+
+        # APPROVE
         if data.startswith('approve_'):
             user_id = int(data.split('_')[1])
-            
             conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, email, password, profile_pin, profile_name FROM profiles WHERE status = 'unsold' LIMIT 1")
-            profile = cursor.fetchone()
+            c = conn.cursor()
+            c.execute("SELECT id,email,password,profile_pin,profile_name FROM profiles WHERE status='unsold' LIMIT 1")
+            row = c.fetchone()
             
-            if not profile:
+            if not row:
                 conn.close()
-                await query.answer("❌ Stock Empty! Add profiles first.", show_alert=True)
+                await query.answer("⚠️ Stock Empty!", show_alert=True)
                 return
             
-            pid, email, pwd, pin, name = profile
-            
-            # Update DB
-            cursor.execute("UPDATE profiles SET status = 'sold', sold_at = ?, sold_to_user_id = ? WHERE id = ?", 
-                           (datetime.now(), user_id, pid))
-            cursor.execute("INSERT INTO sales (user_id, trxid, amount, profile_id) VALUES (?, ?, ?, ?)", 
-                           (user_id, "MANUAL", PRODUCT_PRICE, pid))
+            pid, em, pw, pin, nm = row
+            c.execute("UPDATE profiles SET status='sold', sold_at=?, sold_to_user_id=? WHERE id=?", (datetime.now(), user_id, pid))
+            c.execute("INSERT INTO sales (user_id,trxid,amount,profile_id) VALUES (?,?,?,?)", (user_id, "MANUAL", PRODUCT_PRICE, pid))
             conn.commit()
             conn.close()
             
-            # Send to User
-            msg = (
-                f"✅ *Order Approved!*\n\n"
-                f"📧 Email: `{email}`\n"
-                f"🔑 Pass: `{pwd}`\n"
-                f"👤 Profile: `{name}`\n"
-                f"📌 PIN: `{pin}`\n\n"
-                f"⚠️ Do NOT change info."
-            )
+            msg = f"🎉 *Order Completed!*\n\n📧 `{em}`\n🔑 `{pw}`\n👤 `{nm}`\n📌 `{pin}`"
             try:
-                await context.bot.send_message(user_id, msg, parse_mode='Markdown')
-                await query.edit_message_caption(caption=query.message.caption + "\n\n✅ *APPROVED & DELIVERED*")
-            except Exception:
-                await query.edit_message_caption(caption=query.message.caption + "\n\n⚠️ *Approved but User Blocked Bot*")
+                await context.bot.send_message(user_id, msg, parse_mode=ParseMode.MARKDOWN)
+                await query.edit_message_caption(query.message.caption + "\n\n✅ *DELIVERED*")
+            except: pass
 
-        # --- PRE-REJECT (SHOW OPTIONS) ---
+        # PRE-REJECT (User ID needed)
         elif data.startswith('pre_reject_'):
-            user_id = data.split('_')[2] # string
-            keyboard = [
+            user_id = data.split('_')[2]
+            keyb = [
                 [InlineKeyboardButton("📝 Write Reason", callback_data=f'reject_reason_{user_id}')],
-                [InlineKeyboardButton("⏭ Skip (Default Msg)", callback_data=f'reject_skip_{user_id}')],
-                [InlineKeyboardButton("🔙 Back", callback_data=f'back_to_main_{user_id}')] # Optional safety
+                [InlineKeyboardButton("🚫 Quick Reject", callback_data=f'reject_skip_{user_id}')],
+                [InlineKeyboardButton("🔙 Back", callback_data=f'back_to_main_{user_id}')]
             ]
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyb))
 
-        # --- REJECT SKIP (DEFAULT) ---
+        # QUICK REJECT WITH BUTTON
         elif data.startswith('reject_skip_'):
             user_id = int(data.split('_')[2])
+            
+            # The Rejection Message with Contact Button
+            reject_msg = (
+                "❌ *Payment Rejected*\n\n"
+                "We could not verify your payment details.\n"
+                "If you think this is a mistake, please contact admin."
+            )
+            # This button triggers the Support Flow
+            reject_kb = [[InlineKeyboardButton("💬 Contact Admin For Netflix", callback_data='contact_support_help')]]
+            
             try:
-                await context.bot.send_message(user_id, "❌ *Payment Failed.*\nInformation did not match. Contact Admin.", parse_mode='Markdown')
-                await query.edit_message_caption(caption=query.message.caption + "\n\n❌ *REJECTED (Skipped Reason)*")
-            except:
-                pass
-            await query.edit_message_reply_markup(reply_markup=None) # Remove buttons
+                await context.bot.send_message(
+                    user_id, 
+                    reject_msg, 
+                    parse_mode=ParseMode.MARKDOWN, 
+                    reply_markup=InlineKeyboardMarkup(reject_kb)
+                )
+                await query.edit_message_caption(query.message.caption + "\n\n❌ *REJECTED*")
+            except: pass
+            await query.edit_message_reply_markup(reply_markup=None)
 
-        # --- RESTORE BUTTONS (BACK) ---
+        # RESTORE
         elif data.startswith('back_to_main_'):
             user_id = data.split('_')[3]
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}'),
-                    InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user_id}')
-                ]
-            ]
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+            keyb = [[InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}'), InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user_id}')]]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyb))
 
-    # --- REJECT REASON FLOW (Conversation) ---
+    # REJECT REASON
     @staticmethod
     async def start_reject_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        user_id = query.data.split('_')[2]
-        context.user_data['reject_target_id'] = user_id
-        context.user_data['admin_msg_id'] = query.message.message_id
-        
-        await query.message.reply_text(f"📝 *Write rejection reason for User {user_id}:*", parse_mode='Markdown')
+        context.user_data['reject_target_id'] = query.data.split('_')[2]
+        await query.message.reply_text("📝 *Write Reason:*", parse_mode=ParseMode.MARKDOWN)
         return ADMIN_WAITING_REASON
 
     @staticmethod
@@ -299,32 +376,27 @@ class AdminActions:
         reason = update.message.text
         target_id = int(context.user_data.get('reject_target_id'))
         
-        # Send to User
+        msg = f"❌ *Payment Rejected*\n\nReason: {reason}"
+        kb = [[InlineKeyboardButton("💬 Contact Admin For Netflix", callback_data='contact_support_help')]]
+        
         try:
-            await context.bot.send_message(
-                target_id, 
-                f"❌ *Payment Rejected*\n\nReason: {reason}\n\nContact Admin for help.", 
-                parse_mode='Markdown'
-            )
-            await update.message.reply_text("✅ Reason sent to user.")
-        except:
-            await update.message.reply_text("⚠️ User blocked bot, could not send reason.")
-
+            await context.bot.send_message(target_id, msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(kb))
+            await update.message.reply_text("✅ Reason sent with Contact Button.")
+        except: pass
         return ConversationHandler.END
 
-    # --- ADMIN PANEL & BULK ADD ---
+    # ADMIN PANEL
     @staticmethod
     async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_USER_ID: return
-        keyb = [[InlineKeyboardButton("➕ Add Bulk Profiles", callback_data='adm_add')],
-                [InlineKeyboardButton("📊 Stats", callback_data='adm_stats')]]
-        await update.message.reply_text("🛠 Admin Panel:", reply_markup=InlineKeyboardMarkup(keyb))
+        kb = [[InlineKeyboardButton("➕ Add Bulk", callback_data='adm_add')], [InlineKeyboardButton("📊 Stats", callback_data='adm_stats')]]
+        await update.message.reply_text("🛠 *Admin Panel*", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(kb))
 
     @staticmethod
     async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         if query.data == 'adm_add':
-            await query.edit_message_text("📤 Send profiles:\n`email:pass:pin:name`\n(One per line)")
+            await query.edit_message_text("📤 `email:pass:pin:name`", parse_mode=ParseMode.MARKDOWN)
             return ADMIN_WAITING_BULK
         elif query.data == 'adm_stats':
             conn = sqlite3.connect(DATABASE_PATH)
@@ -334,15 +406,15 @@ class AdminActions:
             c.execute("SELECT COUNT(*) FROM sales")
             sales = c.fetchone()[0]
             conn.close()
-            await query.edit_message_text(f"📊 Stock: {stock}\n💰 Total Sales: {sales}")
+            await query.edit_message_text(f"📊 Stock: {stock} | Sales: {sales}", parse_mode=ParseMode.MARKDOWN)
             return ConversationHandler.END
 
     @staticmethod
     async def save_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
-        count = 0
         conn = sqlite3.connect(DATABASE_PATH)
         c = conn.cursor()
+        count = 0
         for line in text.split('\n'):
             p = line.strip().split(':')
             if len(p) == 4:
@@ -361,34 +433,49 @@ def main():
     init_database()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # 1. User Buy Conversation
+    # Handlers
+    app.add_handler(CommandHandler('start', NetflixBot.start))
+    app.add_handler(CommandHandler('admin', AdminActions.admin_panel))
+    
+    # 1. Buy Flow
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(NetflixBot.buy_netflix, pattern='^buy_netflix$')],
         states={
             WAITING_SCREENSHOT: [MessageHandler(filters.PHOTO, NetflixBot.handle_screenshot)],
-            WAITING_TRX_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, NetflixBot.receive_trx_id)],
-            WAITING_LAST_4: [MessageHandler(filters.TEXT & ~filters.COMMAND, NetflixBot.receive_last_4)],
+            WAITING_TRX_ID: [MessageHandler(filters.TEXT, NetflixBot.receive_trx_id)],
+            WAITING_LAST_4: [MessageHandler(filters.TEXT, NetflixBot.receive_last_4)],
+        },
+        fallbacks=[CommandHandler('cancel', NetflixBot.cancel), CallbackQueryHandler(AdminActions.handle_callback, pattern='^cancel_flow$')]
+    ))
+
+    # 2. Support/Contact/Request Flow (Now handles PHOTOS)
+    app.add_handler(ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(NetflixBot.start_support_flow, pattern='^contact_support_'), # Handles both req & help
+        ],
+        states={
+            # Filters: Text OR Photo OR Caption
+            WAITING_SUPPORT_MESSAGE: [MessageHandler(filters.TEXT | filters.PHOTO | filters.CAPTION, NetflixBot.handle_support_message)]
         },
         fallbacks=[CommandHandler('cancel', NetflixBot.cancel)]
     ))
-
-    # 2. Admin Rejection Reason Conversation
+    
+    # 3. Admin Reject Reason
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(AdminActions.start_reject_reason, pattern='^reject_reason_')],
-        states={ADMIN_WAITING_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, AdminActions.send_reject_reason)]},
+        states={ADMIN_WAITING_REASON: [MessageHandler(filters.TEXT, AdminActions.send_reject_reason)]},
         fallbacks=[CommandHandler('cancel', NetflixBot.cancel)]
     ))
 
-    # 3. Admin Bulk Add Conversation
+    # 4. Admin Bulk
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(AdminActions.admin_buttons, pattern='^adm_add$')],
         states={ADMIN_WAITING_BULK: [MessageHandler(filters.TEXT, AdminActions.save_bulk)]},
         fallbacks=[CommandHandler('cancel', NetflixBot.cancel)]
     ))
 
-    # 4. General Handlers
-    app.add_handler(CommandHandler('start', NetflixBot.start))
-    app.add_handler(CommandHandler('admin', AdminActions.admin_panel))
+    app.add_handler(CallbackQueryHandler(NetflixBot.contact_owner_info, pattern='^contact_owner_info$'))
+    app.add_handler(CallbackQueryHandler(NetflixBot.back_to_start, pattern='^back_to_start$'))
     app.add_handler(CallbackQueryHandler(AdminActions.handle_callback, pattern='^(approve|pre_reject|reject_skip|back_to_main)_'))
     app.add_handler(CallbackQueryHandler(AdminActions.admin_buttons, pattern='^adm_stats$'))
 
