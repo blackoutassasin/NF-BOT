@@ -1,15 +1,12 @@
 """
-Netflix Profile Telegram Sales Bot
-A professional bot for selling Netflix profiles with OCR payment verification
+Netflix Profile Sales Bot - Advanced Manual Verification
+Features: Screenshot -> TrxID -> Last 4 Digits -> Admin Approval (Reason/Skip)
 """
 
 import os
-import re
 import sqlite3
 import logging
 from datetime import datetime
-from io import BytesIO
-from typing import Optional, Tuple
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -22,13 +19,6 @@ from telegram.ext import (
     ConversationHandler
 )
 
-try:
-    from PIL import Image
-    import pytesseract
-except ImportError:
-    print("PIL and pytesseract required. Install via requirements.txt")
-    exit(1)
-
 # Enable logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -36,25 +26,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
+# --- CONFIGURATION ---
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))  # Set your Telegram User ID
+ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
 BKASH_NUMBER = os.getenv('BKASH_NUMBER', '01XXXXXXXXX')
 NAGAD_NUMBER = os.getenv('NAGAD_NUMBER', '01XXXXXXXXX')
 PRODUCT_PRICE = 50
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'netflix_bot.db')
 
-# Conversation states
-WAITING_PAYMENT_SCREENSHOT = 1
-WAITING_BULK_PROFILES = 2
+# --- STATES ---
+# User Flow States
+WAITING_SCREENSHOT = 1
+WAITING_TRX_ID = 2
+WAITING_LAST_4 = 3
 
-# Database initialization
+# Admin Flow States (For writing reject reason)
+ADMIN_WAITING_REASON = 4
+ADMIN_WAITING_BULK = 5
+
+# --- DATABASE INIT ---
 def init_database():
-    """Initialize SQLite database with required tables"""
+    if '/' in DATABASE_PATH:
+        os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    
-    # Profiles table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,15 +62,6 @@ def init_database():
             sold_to_user_id INTEGER
         )
     ''')
-    
-    # Migration: Check if profile_name column exists (for existing databases)
-    try:
-        cursor.execute("SELECT profile_name FROM profiles LIMIT 1")
-    except sqlite3.OperationalError:
-        logger.info("Migrating database: Adding profile_name column...")
-        cursor.execute("ALTER TABLE profiles ADD COLUMN profile_name TEXT DEFAULT 'Default'")
-    
-    # Sales table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,477 +74,326 @@ def init_database():
             FOREIGN KEY (profile_id) REFERENCES profiles(id)
         )
     ''')
-    
     conn.commit()
     conn.close()
-    logger.info("Database initialized successfully")
 
+# --- USER BUYING FLOW ---
 
 class NetflixBot:
-    """Main bot class handling all operations"""
     
     @staticmethod
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command - Show welcome message and buy button"""
         user = update.effective_user
-        
-        keyboard = [
-            [InlineKeyboardButton("🎬 Buy Netflix Profile (50 TK)", callback_data='buy_netflix')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        welcome_message = (
-            f"👋 Welcome {user.first_name}!\n\n"
-            f"🎬 *Netflix Profile Sales Bot*\n\n"
-            f"📦 *Product:* Netflix Profile (1 Month Access)\n"
-            f"💰 *Price:* {PRODUCT_PRICE} BDT\n"
-            f"💳 *Payment:* bKash/Nagad\n\n"
-            f"✅ *How it works:*\n"
-            f"1️⃣ Click the button below\n"
-            f"2️⃣ Send money via bKash/Nagad\n"
-            f"3️⃣ Upload payment screenshot\n"
-            f"4️⃣ Get your Netflix profile instantly!\n\n"
-            f"🔒 100% Automated & Secure"
+        keyboard = [[InlineKeyboardButton("🎬 Buy Netflix Profile (50 TK)", callback_data='buy_netflix')]]
+        welcome_text = (
+            f"👋 Hello {user.first_name}!\n\n"
+            f"🎬 *Netflix Premium Profile*\n"
+            f"💰 Price: *{PRODUCT_PRICE} BDT*\n"
+            f"📅 Validity: 1 Month\n"
+            f"🛡️ Protection: PIN Protected\n\n"
+            f"Click 'Buy' to purchase 👇"
         )
-        
-        await update.message.reply_text(
-            welcome_message,
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     
     @staticmethod
     async def buy_netflix(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle buy button click - Show payment instructions"""
         query = update.callback_query
         await query.answer()
         
-        # Check if profiles are available
+        # Check Stock
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM profiles WHERE status = 'unsold'")
-        available_count = cursor.fetchone()[0]
+        stock = cursor.fetchone()[0]
         conn.close()
         
-        if available_count == 0:
-            await query.edit_message_text(
-                "❌ *Sorry! No profiles available right now.*\n\n"
-                "Please contact the admin or try again later.",
-                parse_mode='Markdown'
-            )
+        if stock == 0:
+            await query.edit_message_text("❌ *Out of Stock!* Please come back later.", parse_mode='Markdown')
             return ConversationHandler.END
         
-        payment_message = (
+        msg = (
             f"💳 *Payment Instructions*\n\n"
-            f"💰 Amount: *{PRODUCT_PRICE} BDT*\n\n"
-            f"📱 *bKash Number:* `{BKASH_NUMBER}`\n"
-            f"📱 *Nagad Number:* `{NAGAD_NUMBER}`\n\n"
-            f"⚠️ *Important:*\n"
-            f"• Send exactly {PRODUCT_PRICE} TK\n"
-            f"• Use Send Money (NOT Cash Out)\n"
-            f"• Take a clear screenshot of the transaction\n"
-            f"• Screenshot must show Transaction ID and Amount\n\n"
-            f"📸 *Next Step:*\n"
-            f"Send your payment screenshot now ⬇️"
+            f"Send *{PRODUCT_PRICE} TK* to:\n"
+            f"🚀 *bKash:* `{BKASH_NUMBER}` (Send Money)\n"
+            f"🚀 *Nagad:* `{NAGAD_NUMBER}` (Send Money)\n\n"
+            f"👉 *Step 1:* After payment, send the **Screenshot** here."
         )
+        await query.edit_message_text(msg, parse_mode='Markdown')
+        return WAITING_SCREENSHOT
+
+    @staticmethod
+    async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message.photo:
+            await update.message.reply_text("❌ Please send a PHOTO (Screenshot).")
+            return WAITING_SCREENSHOT
         
-        await query.edit_message_text(payment_message, parse_mode='Markdown')
-        return WAITING_PAYMENT_SCREENSHOT
-    
+        # Save photo file_id to context
+        context.user_data['payment_photo'] = update.message.photo[-1].file_id
+        
+        await update.message.reply_text(
+            "✅ Screenshot Received.\n\n"
+            "👉 *Step 2:* Please type the **Transaction ID** (TrxID) text now.\n"
+            "(Example: 9G45H6J7K8)",
+            parse_mode='Markdown'
+        )
+        return WAITING_TRX_ID
+
     @staticmethod
-    def extract_transaction_info(image: Image.Image) -> Tuple[Optional[str], Optional[int]]:
-        """
-        Extract Transaction ID and Amount from payment screenshot using OCR
-        """
-        try:
-            # Preprocess image for better OCR
-            image = image.convert('L')
-            
-            # Apply OCR
-            text = pytesseract.image_to_string(image)
-            logger.info(f"OCR extracted text: {text}")
-            
-            # Extract Transaction ID (10 alphanumeric characters)
-            trx_patterns = [
-                r'(?:TrxID|Transaction ID|TXN ID|TXNID|TRX)\s*:?\s*([A-Z0-9]{10})',
-                r'\b([A-Z0-9]{10})\b',  # Fallback: any 10-char alphanumeric
-            ]
-            
-            transaction_id = None
-            for pattern in trx_patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    transaction_id = match.group(1).upper()
-                    if re.search(r'[A-Z]', transaction_id) and re.search(r'[0-9]', transaction_id):
-                        break
-            
-            # Extract Amount (looking for 50 or 50.00)
-            amount_patterns = [
-                r'(?:Amount|Total|Tk|BDT|৳)\s*:?\s*(\d+(?:\.\d{2})?)',
-                r'(\d+(?:\.\d{2})?)\s*(?:Tk|BDT|৳|Taka)',
-                r'\b(50(?:\.00)?)\b',  # Direct match for 50
-            ]
-            
-            amount = None
-            for pattern in amount_patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    try:
-                        amount = int(float(match.group(1)))
-                        if amount == PRODUCT_PRICE:
-                            break
-                    except ValueError:
-                        continue
-            
-            return transaction_id, amount
-            
-        except Exception as e:
-            logger.error(f"OCR extraction error: {e}")
-            return None, None
-    
+    async def receive_trx_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        trx_id = update.message.text.strip().upper()
+        context.user_data['payment_trx'] = trx_id
+        
+        await update.message.reply_text(
+            "✅ TrxID Saved.\n\n"
+            "👉 *Step 3:* Enter the **Last 4 Digits** of the number you sent money from.\n"
+            "(Example: 4635)",
+            parse_mode='Markdown'
+        )
+        return WAITING_LAST_4
+
     @staticmethod
-    async def handle_payment_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Process uploaded payment screenshot"""
+    async def receive_last_4(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        last_4 = update.message.text.strip()
+        context.user_data['payment_last4'] = last_4
         user = update.effective_user
         
-        # Check if message has photo
-        if not update.message.photo:
-            await update.message.reply_text(
-                "❌ Please send a screenshot image (photo), not a file."
-            )
-            return WAITING_PAYMENT_SCREENSHOT
+        # Notify User
+        await update.message.reply_text(
+            "✅ *Order Submitted!* \n\n"
+            "Admin is checking your details manually.\n"
+            "Please wait...",
+            parse_mode='Markdown'
+        )
+
+        # Prepare Admin Report
+        photo_id = context.user_data['payment_photo']
+        trx_id = context.user_data['payment_trx']
         
-        await update.message.reply_text("🔍 Processing your screenshot... Please wait.")
+        caption = (
+            f"🛒 *New Order Request*\n\n"
+            f"👤 *User ID:* `{user.id}`\n"
+            f"📛 *User Name:* @{user.username if user.username else 'None'}\n"
+            f"📦 *Quantity:* 1 Profile\n\n"
+            f"🆔 *User TrxID:* `{trx_id}`\n"
+            f"📱 *User Paid Last 4:* `{last_4}`"
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user.id}'),
+                InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user.id}')
+            ]
+        ]
+
+        # Send to Admin
+        await context.bot.send_photo(
+            chat_id=ADMIN_USER_ID,
+            photo=photo_id,
+            caption=caption,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         
-        try:
-            # Download photo
-            photo_file = await update.message.photo[-1].get_file()
-            photo_bytes = await photo_file.download_as_bytearray()
-            image = Image.open(BytesIO(photo_bytes))
+        return ConversationHandler.END
+
+    @staticmethod
+    async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("❌ Operation Cancelled.")
+        return ConversationHandler.END
+
+
+# --- ADMIN LOGIC ---
+
+class AdminActions:
+    
+    @staticmethod
+    async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        
+        # --- APPROVE FLOW ---
+        if data.startswith('approve_'):
+            user_id = int(data.split('_')[1])
             
-            # Extract transaction info
-            trx_id, amount = NetflixBot.extract_transaction_info(image)
-            
-            # Validate extracted data
-            if not trx_id:
-                await update.message.reply_text(
-                    "❌ *Verification Failed*\n\n"
-                    "Could not find Transaction ID in your screenshot.\n\n"
-                    "Please ensure:\n"
-                    "✓ Screenshot is clear and readable\n"
-                    "✓ Transaction ID is visible\n"
-                    "✓ Image is not cropped too much\n\n"
-                    "Please send a new screenshot.",
-                    parse_mode='Markdown'
-                )
-                return WAITING_PAYMENT_SCREENSHOT
-            
-            if amount != PRODUCT_PRICE:
-                await update.message.reply_text(
-                    f"❌ *Verification Failed*\n\n"
-                    f"Amount mismatch!\n"
-                    f"Expected: {PRODUCT_PRICE} BDT\n"
-                    f"Found: {amount if amount else 'Not detected'} BDT\n\n"
-                    f"Please send exactly {PRODUCT_PRICE} TK and upload a new screenshot.",
-                    parse_mode='Markdown'
-                )
-                return WAITING_PAYMENT_SCREENSHOT
-            
-            # Check for duplicate transaction
             conn = sqlite3.connect(DATABASE_PATH)
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM sales WHERE trxid = ?", (trx_id,))
-            
-            if cursor.fetchone():
-                conn.close()
-                await update.message.reply_text(
-                    "❌ *Duplicate Transaction*\n\n"
-                    "This transaction has already been used.\n"
-                    "Please make a new payment or contact admin.",
-                    parse_mode='Markdown'
-                )
-                return ConversationHandler.END
-            
-            # Get an unsold profile
-            cursor.execute(
-                "SELECT id, email, password, profile_pin, profile_name FROM profiles WHERE status = 'unsold' LIMIT 1"
-            )
+            cursor.execute("SELECT id, email, password, profile_pin, profile_name FROM profiles WHERE status = 'unsold' LIMIT 1")
             profile = cursor.fetchone()
             
             if not profile:
                 conn.close()
-                await update.message.reply_text(
-                    "❌ *Out of Stock*\n\n"
-                    "Sorry, no profiles available right now.\n"
-                    "Please contact admin for a refund.",
-                    parse_mode='Markdown'
-                )
-                return ConversationHandler.END
+                await query.answer("❌ Stock Empty! Add profiles first.", show_alert=True)
+                return
             
-            profile_id, email, password, pin, profile_name = profile
+            pid, email, pwd, pin, name = profile
             
-            # Record the sale
-            cursor.execute(
-                """INSERT INTO sales (user_id, username, trxid, amount, profile_id) 
-                   VALUES (?, ?, ?, ?, ?)""",
-                (user.id, user.username, trx_id, amount, profile_id)
-            )
-            
-            # Mark profile as sold
-            cursor.execute(
-                """UPDATE profiles 
-                   SET status = 'sold', sold_at = ?, sold_to_user_id = ? 
-                   WHERE id = ?""",
-                (datetime.now(), user.id, profile_id)
-            )
-            
+            # Update DB
+            cursor.execute("UPDATE profiles SET status = 'sold', sold_at = ?, sold_to_user_id = ? WHERE id = ?", 
+                           (datetime.now(), user_id, pid))
+            cursor.execute("INSERT INTO sales (user_id, trxid, amount, profile_id) VALUES (?, ?, ?, ?)", 
+                           (user_id, "MANUAL", PRODUCT_PRICE, pid))
             conn.commit()
             conn.close()
             
-            # Send profile details
-            success_message = (
-                "✅ *Payment Verified Successfully!*\n\n"
-                "🎬 *Your Netflix Profile:*\n\n"
-                f"📧 *Email:* `{email}`\n"
-                f"🔑 *Password:* `{password}`\n"
-                f"👤 *Profile Name:* `{profile_name}`\n"
-                f"📍 *Profile PIN:* `{pin}`\n\n"
-                f"⏱ *Valid for:* 1 Month\n"
-                f"💳 *Transaction ID:* `{trx_id}`\n\n"
-                "⚠️ *Important Notes:*\n"
-                "• Do NOT change the password\n"
-                "• Use only your assigned profile\n"
-                "• Save these credentials securely\n\n"
-                "✨ Enjoy your Netflix! 🍿"
+            # Send to User
+            msg = (
+                f"✅ *Order Approved!*\n\n"
+                f"📧 Email: `{email}`\n"
+                f"🔑 Pass: `{pwd}`\n"
+                f"👤 Profile: `{name}`\n"
+                f"📌 PIN: `{pin}`\n\n"
+                f"⚠️ Do NOT change info."
             )
-            
-            await update.message.reply_text(success_message, parse_mode='Markdown')
-            
-            logger.info(f"Sale completed: User {user.id}, TrxID {trx_id}, Profile {profile_id}")
-            return ConversationHandler.END
-            
-        except Exception as e:
-            logger.error(f"Error processing screenshot: {e}")
-            await update.message.reply_text(
-                "❌ *Processing Error*\n\n"
-                "An error occurred while processing your screenshot.\n"
-                "Please try again or contact admin.",
-                parse_mode='Markdown'
-            )
-            return ConversationHandler.END
-    
-    @staticmethod
-    async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Cancel the current operation"""
-        await update.message.reply_text(
-            "❌ Operation cancelled.\n\nUse /start to begin again."
-        )
-        return ConversationHandler.END
+            try:
+                await context.bot.send_message(user_id, msg, parse_mode='Markdown')
+                await query.edit_message_caption(caption=query.message.caption + "\n\n✅ *APPROVED & DELIVERED*")
+            except Exception:
+                await query.edit_message_caption(caption=query.message.caption + "\n\n⚠️ *Approved but User Blocked Bot*")
 
+        # --- PRE-REJECT (SHOW OPTIONS) ---
+        elif data.startswith('pre_reject_'):
+            user_id = data.split('_')[2] # string
+            keyboard = [
+                [InlineKeyboardButton("📝 Write Reason", callback_data=f'reject_reason_{user_id}')],
+                [InlineKeyboardButton("⏭ Skip (Default Msg)", callback_data=f'reject_skip_{user_id}')],
+                [InlineKeyboardButton("🔙 Back", callback_data=f'back_to_main_{user_id}')] # Optional safety
+            ]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
-class AdminPanel:
-    """Admin commands for bot management"""
-    
+        # --- REJECT SKIP (DEFAULT) ---
+        elif data.startswith('reject_skip_'):
+            user_id = int(data.split('_')[2])
+            try:
+                await context.bot.send_message(user_id, "❌ *Payment Failed.*\nInformation did not match. Contact Admin.", parse_mode='Markdown')
+                await query.edit_message_caption(caption=query.message.caption + "\n\n❌ *REJECTED (Skipped Reason)*")
+            except:
+                pass
+            await query.edit_message_reply_markup(reply_markup=None) # Remove buttons
+
+        # --- RESTORE BUTTONS (BACK) ---
+        elif data.startswith('back_to_main_'):
+            user_id = data.split('_')[3]
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}'),
+                    InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user_id}')
+                ]
+            ]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # --- REJECT REASON FLOW (Conversation) ---
     @staticmethod
-    def is_admin(user_id: int) -> bool:
-        """Check if user is admin"""
-        return user_id == ADMIN_USER_ID
-    
-    @staticmethod
-    async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show admin panel"""
-        if not AdminPanel.is_admin(update.effective_user.id):
-            await update.message.reply_text("❌ Unauthorized access.")
-            return
-        
-        keyboard = [
-            [InlineKeyboardButton("➕ Add Profiles", callback_data='admin_add_profiles')],
-            [InlineKeyboardButton("📊 View Stats", callback_data='admin_stats')],
-            [InlineKeyboardButton("📦 Check Stock", callback_data='admin_stock')],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "🔐 *Admin Panel*\n\nSelect an option:",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
-    
-    @staticmethod
-    async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle admin panel button clicks"""
+    async def start_reject_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
+        user_id = query.data.split('_')[2]
+        context.user_data['reject_target_id'] = user_id
+        context.user_data['admin_msg_id'] = query.message.message_id
         
-        if not AdminPanel.is_admin(query.from_user.id):
-            await query.edit_message_text("❌ Unauthorized access.")
-            return
+        await query.message.reply_text(f"📝 *Write rejection reason for User {user_id}:*", parse_mode='Markdown')
+        return ADMIN_WAITING_REASON
+
+    @staticmethod
+    async def send_reject_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        reason = update.message.text
+        target_id = int(context.user_data.get('reject_target_id'))
         
-        if query.data == 'admin_add_profiles':
-            await query.edit_message_text(
-                "➕ *Add Profiles in Bulk*\n\n"
-                "Send profiles in this NEW format (one per line):\n"
-                "`email:password:pin:profile_name`\n\n"
-                "*Example:*\n"
-                "`user1@gmail.com:pass123:1111:MyProfile`\n"
-                "`user2@yahoo.com:pass456:2222:Kids`\n\n"
-                "Send /cancel to abort.",
+        # Send to User
+        try:
+            await context.bot.send_message(
+                target_id, 
+                f"❌ *Payment Rejected*\n\nReason: {reason}\n\nContact Admin for help.", 
                 parse_mode='Markdown'
             )
-            return WAITING_BULK_PROFILES
-        
-        elif query.data == 'admin_stats':
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT COUNT(*), SUM(amount) FROM sales")
-            total_sales, total_revenue = cursor.fetchone()
-            total_revenue = total_revenue or 0
-            
-            cursor.execute(
-                "SELECT COUNT(*) FROM sales WHERE DATE(timestamp) = DATE('now')"
-            )
-            today_sales = cursor.fetchone()[0]
-            
-            conn.close()
-            
-            stats_message = (
-                f"📊 *Sales Statistics*\n\n"
-                f"💰 Total Revenue: *{total_revenue} BDT*\n"
-                f"📈 Total Sales: *{total_sales}*\n"
-                f"📅 Today's Sales: *{today_sales}*\n"
-            )
-            
-            await query.edit_message_text(stats_message, parse_mode='Markdown')
-        
-        elif query.data == 'admin_stock':
-            conn = sqlite3.connect(DATABASE_PATH)
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT COUNT(*) FROM profiles WHERE status = 'unsold'")
-            unsold = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM profiles WHERE status = 'sold'")
-            sold = cursor.fetchone()[0]
-            
-            conn.close()
-            
-            stock_message = (
-                f"📦 *Stock Status*\n\n"
-                f"✅ Available: *{unsold}* profiles\n"
-                f"❌ Sold: *{sold}* profiles\n"
-                f"📊 Total: *{unsold + sold}* profiles\n"
-            )
-            
-            await query.edit_message_text(stock_message, parse_mode='Markdown')
-        
+            await update.message.reply_text("✅ Reason sent to user.")
+        except:
+            await update.message.reply_text("⚠️ User blocked bot, could not send reason.")
+
         return ConversationHandler.END
-    
+
+    # --- ADMIN PANEL & BULK ADD ---
     @staticmethod
-    async def receive_bulk_profiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Process bulk profile addition"""
-        if not AdminPanel.is_admin(update.effective_user.id):
-            await update.message.reply_text("❌ Unauthorized access.")
+    async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_USER_ID: return
+        keyb = [[InlineKeyboardButton("➕ Add Bulk Profiles", callback_data='adm_add')],
+                [InlineKeyboardButton("📊 Stats", callback_data='adm_stats')]]
+        await update.message.reply_text("🛠 Admin Panel:", reply_markup=InlineKeyboardMarkup(keyb))
+
+    @staticmethod
+    async def admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if query.data == 'adm_add':
+            await query.edit_message_text("📤 Send profiles:\n`email:pass:pin:name`\n(One per line)")
+            return ADMIN_WAITING_BULK
+        elif query.data == 'adm_stats':
+            conn = sqlite3.connect(DATABASE_PATH)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM profiles WHERE status='unsold'")
+            stock = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM sales")
+            sales = c.fetchone()[0]
+            conn.close()
+            await query.edit_message_text(f"📊 Stock: {stock}\n💰 Total Sales: {sales}")
             return ConversationHandler.END
-        
-        text = update.message.text.strip()
-        lines = text.split('\n')
-        
-        added = 0
-        errors = []
-        
+
+    @staticmethod
+    async def save_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        count = 0
         conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        for line_num, line in enumerate(lines, 1):
-            line = line.strip()
-            if not line:
-                continue
-            
-            parts = line.split(':')
-            if len(parts) != 4:
-                errors.append(f"Line {line_num}: Invalid format. Use email:pass:pin:name")
-                continue
-            
-            email, password, pin, profile_name = parts
-            
-            try:
-                cursor.execute(
-                    "INSERT INTO profiles (email, password, profile_pin, profile_name) VALUES (?, ?, ?, ?)",
-                    (email.strip(), password.strip(), pin.strip(), profile_name.strip())
-                )
-                added += 1
-            except Exception as e:
-                errors.append(f"Line {line_num}: {str(e)}")
-        
+        c = conn.cursor()
+        for line in text.split('\n'):
+            p = line.strip().split(':')
+            if len(p) == 4:
+                c.execute("INSERT INTO profiles (email,password,profile_pin,profile_name) VALUES (?,?,?,?)", p)
+                count += 1
         conn.commit()
         conn.close()
-        
-        result_message = f"✅ *Added {added} profiles successfully!*\n\n"
-        
-        if errors:
-            result_message += "⚠️ *Errors:*\n" + "\n".join(errors[:10])
-            if len(errors) > 10:
-                result_message += f"\n... and {len(errors) - 10} more errors"
-        
-        await update.message.reply_text(result_message, parse_mode='Markdown')
+        await update.message.reply_text(f"✅ Added {count} profiles.")
         return ConversationHandler.END
 
-
 def main():
-    """Start the bot"""
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN environment variable not set!")
+        print("Error: BOT_TOKEN missing")
         return
     
-    if ADMIN_USER_ID == 0:
-        logger.warning("ADMIN_USER_ID not set! Admin panel will not work.")
-    
-    # Initialize database
     init_database()
-    
-    # Create application
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Conversation handler for buying Netflix
-    buy_conv_handler = ConversationHandler(
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # 1. User Buy Conversation
+    app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(NetflixBot.buy_netflix, pattern='^buy_netflix$')],
         states={
-            WAITING_PAYMENT_SCREENSHOT: [
-                MessageHandler(filters.PHOTO, NetflixBot.handle_payment_screenshot)
-            ],
+            WAITING_SCREENSHOT: [MessageHandler(filters.PHOTO, NetflixBot.handle_screenshot)],
+            WAITING_TRX_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, NetflixBot.receive_trx_id)],
+            WAITING_LAST_4: [MessageHandler(filters.TEXT & ~filters.COMMAND, NetflixBot.receive_last_4)],
         },
-        fallbacks=[CommandHandler('cancel', NetflixBot.cancel)],
-        allow_reentry=True
-    )
-    
-    # Conversation handler for admin bulk add
-    admin_add_conv_handler = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(AdminPanel.admin_button_handler, pattern='^admin_add_profiles$')
-        ],
-        states={
-            WAITING_BULK_PROFILES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, AdminPanel.receive_bulk_profiles)
-            ],
-        },
-        fallbacks=[CommandHandler('cancel', NetflixBot.cancel)],
-        allow_reentry=True
-    )
-    
-    # Add handlers
-    application.add_handler(CommandHandler('start', NetflixBot.start))
-    application.add_handler(CommandHandler('admin', AdminPanel.admin))
-    application.add_handler(buy_conv_handler)
-    application.add_handler(admin_add_conv_handler)
-    application.add_handler(
-        CallbackQueryHandler(AdminPanel.admin_button_handler, pattern='^admin_(stats|stock)$')
-    )
-    
-    # Start bot
-    logger.info("Bot started successfully!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+        fallbacks=[CommandHandler('cancel', NetflixBot.cancel)]
+    ))
 
+    # 2. Admin Rejection Reason Conversation
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(AdminActions.start_reject_reason, pattern='^reject_reason_')],
+        states={ADMIN_WAITING_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, AdminActions.send_reject_reason)]},
+        fallbacks=[CommandHandler('cancel', NetflixBot.cancel)]
+    ))
+
+    # 3. Admin Bulk Add Conversation
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(AdminActions.admin_buttons, pattern='^adm_add$')],
+        states={ADMIN_WAITING_BULK: [MessageHandler(filters.TEXT, AdminActions.save_bulk)]},
+        fallbacks=[CommandHandler('cancel', NetflixBot.cancel)]
+    ))
+
+    # 4. General Handlers
+    app.add_handler(CommandHandler('start', NetflixBot.start))
+    app.add_handler(CommandHandler('admin', AdminActions.admin_panel))
+    app.add_handler(CallbackQueryHandler(AdminActions.handle_callback, pattern='^(approve|pre_reject|reject_skip|back_to_main)_'))
+    app.add_handler(CallbackQueryHandler(AdminActions.admin_buttons, pattern='^adm_stats$'))
+
+    print("Bot Started...")
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
