@@ -1,9 +1,9 @@
 """
-Netflix Profile Sales Bot - Final Pro Version
+Netflix Profile Sales Bot - Fixed Menu Version
 Features:
-1. Rejection with 'Contact Admin' button
-2. Image Support in Request/Contact messages
-3. Clean UI & Manual Verification
+- Fixed 'Back to Menu' crash issue
+- Robust Start Command
+- All previous advanced features included
 """
 
 import os
@@ -44,7 +44,7 @@ WAITING_TRX_ID = 2
 WAITING_LAST_4 = 3
 ADMIN_WAITING_REASON = 4
 ADMIN_WAITING_BULK = 5
-WAITING_SUPPORT_MESSAGE = 6  # Handles both Product Request & Admin Contact
+WAITING_SUPPORT_MESSAGE = 6
 
 # --- DATABASE INIT ---
 def init_database():
@@ -89,6 +89,9 @@ class NetflixBot:
     
     @staticmethod
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Smart Start Function: Handles both /start command AND Back buttons
+        """
         user = update.effective_user
         
         welcome_text = (
@@ -105,14 +108,26 @@ class NetflixBot:
             [InlineKeyboardButton("📝 Request Product", callback_data='contact_support_req')],
             [InlineKeyboardButton("📞 Contact Owner", callback_data='contact_owner_info')]
         ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
-            welcome_text, 
-            parse_mode=ParseMode.MARKDOWN, 
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        # Check if called from a Button (Callback) or Command (Message)
+        if update.callback_query:
+            # If called from "Back" button, EDIT the old message
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                text=welcome_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup
+            )
+        else:
+            # If called from /start command, SEND a new message
+            await update.message.reply_text(
+                welcome_text, 
+                parse_mode=ParseMode.MARKDOWN, 
+                reply_markup=reply_markup
+            )
 
-    # --- OWNER INFO (Just Text) ---
+    # --- OWNER INFO ---
     @staticmethod
     async def contact_owner_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -122,7 +137,7 @@ class NetflixBot:
             "👨‍💻 *Owner Contact*\n"
             "────────────────\n"
             "📞 Phone: +8801784346353\n"
-            "✈️ Telegram: @YourUsername\n" # Change this
+            "✈️ Telegram: @YourUsername\n" # Change to your actual username
             "────────────────\n"
             "Click below to send a message directly via Bot."
         )
@@ -134,11 +149,10 @@ class NetflixBot:
 
     @staticmethod
     async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer()
+        """Redirects back to main menu properly"""
         await NetflixBot.start(update, context)
 
-    # --- SUPPORT MESSAGE FLOW (Handles Text & Photos) ---
+    # --- SUPPORT MESSAGE FLOW ---
     @staticmethod
     async def start_support_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -158,7 +172,6 @@ class NetflixBot:
     async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         
-        # Prepare Admin Notification
         admin_header = (
             f"🔔 *New User Message*\n"
             f"────────────────\n"
@@ -166,16 +179,15 @@ class NetflixBot:
             f"🆔 ID: `{user.id}`\n"
             f"🔗 Username: @{user.username if user.username else 'None'}\n"
             f"────────────────\n"
-            f"📩 *Message Content:*"
+            f"📩 *Content:*"
         )
 
-        # Check if photo or text
+        # Handle Photo
         if update.message.photo:
             photo_id = update.message.photo[-1].file_id
-            caption = update.message.caption if update.message.caption else "No caption provided."
+            caption = update.message.caption if update.message.caption else "No caption."
             full_caption = f"{admin_header}\n{caption}"
             
-            # Send Photo to Admin
             try:
                 await context.bot.send_photo(
                     chat_id=ADMIN_USER_ID, 
@@ -185,11 +197,10 @@ class NetflixBot:
                 )
             except: pass
             
+        # Handle Text
         elif update.message.text:
             text_content = update.message.text
             full_text = f"{admin_header}\n{text_content}"
-            
-            # Send Text to Admin
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_USER_ID, 
@@ -198,23 +209,30 @@ class NetflixBot:
                 )
             except: pass
         else:
-            await update.message.reply_text("❌ Unsupported format. Send Text or Photo.")
+            await update.message.reply_text("❌ Send Text or Photo only.")
             return WAITING_SUPPORT_MESSAGE
         
-        # Reply to User
+        # Success & Return to Menu
         await update.message.reply_text(
-            "✅ *Message Sent Successfully!*\n\n"
-            "Admin has received your message/photo.\n"
-            "They will contact you soon.",
+            "✅ *Message Sent!* Admin will contact you soon.",
             parse_mode=ParseMode.MARKDOWN
         )
         
-        # Show Menu Button
-        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_start')]]
-        await update.message.reply_text("Go back to menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+        # Send Menu again as a new message so user sees buttons
+        welcome_text = (
+            f"👋 *Welcome Back, {user.first_name}!*\n"
+            f"Choose an option below:"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🛒 Order Netflix (50 TK)", callback_data='buy_netflix')],
+            [InlineKeyboardButton("📝 Request Product", callback_data='contact_support_req')],
+            [InlineKeyboardButton("📞 Contact Owner", callback_data='contact_owner_info')]
+        ]
+        await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+        
         return ConversationHandler.END
 
-    # --- BUY FLOW (Unchanged Logic) ---
+    # --- BUY FLOW ---
     @staticmethod
     async def buy_netflix(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -231,6 +249,9 @@ class NetflixBot:
                 "🚫 *Out of Stock*\n\nWe are currently restocking.", 
                 parse_mode=ParseMode.MARKDOWN
             )
+            # Add back button even on out of stock
+            keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data='back_to_start')]]
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
             return ConversationHandler.END
         
         msg = (
@@ -267,7 +288,6 @@ class NetflixBot:
         
         await update.message.reply_text("⏳ *Verifying...* Please wait for Admin approval.", parse_mode=ParseMode.MARKDOWN)
 
-        # Admin Receipt
         caption = (
             f"🧾 *New Order*\n"
             f"👤: {user.full_name} (`{user.id}`)\n"
@@ -282,6 +302,8 @@ class NetflixBot:
     @staticmethod
     async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Cancelled.")
+        # Show menu again
+        await NetflixBot.start(update, context)
         return ConversationHandler.END
 
 # --- ADMIN LOGIC ---
@@ -295,6 +317,7 @@ class AdminActions:
         
         if data == 'cancel_flow':
             await query.edit_message_text("❌ Order cancelled.")
+            # We can redirect back to menu if needed, but simple text is fine here
             return ConversationHandler.END
 
         # APPROVE
@@ -322,7 +345,7 @@ class AdminActions:
                 await query.edit_message_caption(query.message.caption + "\n\n✅ *DELIVERED*")
             except: pass
 
-        # PRE-REJECT (User ID needed)
+        # PRE-REJECT
         elif data.startswith('pre_reject_'):
             user_id = data.split('_')[2]
             keyb = [
@@ -332,26 +355,18 @@ class AdminActions:
             ]
             await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyb))
 
-        # QUICK REJECT WITH BUTTON
+        # QUICK REJECT
         elif data.startswith('reject_skip_'):
             user_id = int(data.split('_')[2])
-            
-            # The Rejection Message with Contact Button
             reject_msg = (
                 "❌ *Payment Rejected*\n\n"
                 "We could not verify your payment details.\n"
                 "If you think this is a mistake, please contact admin."
             )
-            # This button triggers the Support Flow
             reject_kb = [[InlineKeyboardButton("💬 Contact Admin For Netflix", callback_data='contact_support_help')]]
             
             try:
-                await context.bot.send_message(
-                    user_id, 
-                    reject_msg, 
-                    parse_mode=ParseMode.MARKDOWN, 
-                    reply_markup=InlineKeyboardMarkup(reject_kb)
-                )
+                await context.bot.send_message(user_id, reject_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(reject_kb))
                 await query.edit_message_caption(query.message.caption + "\n\n❌ *REJECTED*")
             except: pass
             await query.edit_message_reply_markup(reply_markup=None)
@@ -359,7 +374,7 @@ class AdminActions:
         # RESTORE
         elif data.startswith('back_to_main_'):
             user_id = data.split('_')[3]
-            keyb = [[InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}'), InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user_id}')]]
+            keyb = [[InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}'), InlineKeyboardButton("❌ Reject", callback_data=f'pre_reject_{user.id}')]]
             await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyb))
 
     # REJECT REASON
@@ -381,7 +396,7 @@ class AdminActions:
         
         try:
             await context.bot.send_message(target_id, msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(kb))
-            await update.message.reply_text("✅ Reason sent with Contact Button.")
+            await update.message.reply_text("✅ Reason sent.")
         except: pass
         return ConversationHandler.END
 
@@ -448,19 +463,18 @@ def main():
         fallbacks=[CommandHandler('cancel', NetflixBot.cancel), CallbackQueryHandler(AdminActions.handle_callback, pattern='^cancel_flow$')]
     ))
 
-    # 2. Support/Contact/Request Flow (Now handles PHOTOS)
+    # 2. Support Flow
     app.add_handler(ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(NetflixBot.start_support_flow, pattern='^contact_support_'), # Handles both req & help
+            CallbackQueryHandler(NetflixBot.start_support_flow, pattern='^contact_support_'),
         ],
         states={
-            # Filters: Text OR Photo OR Caption
             WAITING_SUPPORT_MESSAGE: [MessageHandler(filters.TEXT | filters.PHOTO | filters.CAPTION, NetflixBot.handle_support_message)]
         },
         fallbacks=[CommandHandler('cancel', NetflixBot.cancel)]
     ))
     
-    # 3. Admin Reject Reason
+    # 3. Admin Reason
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(AdminActions.start_reject_reason, pattern='^reject_reason_')],
         states={ADMIN_WAITING_REASON: [MessageHandler(filters.TEXT, AdminActions.send_reject_reason)]},
