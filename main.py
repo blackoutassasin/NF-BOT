@@ -1,10 +1,10 @@
 """
-Netflix Profile Sales Bot - Final Fixed Version
+Netflix Profile Sales Bot - Broadcast Fixed Version
 Features:
+- Fixed Broadcast (Safe Mode - No Formatting Errors)
 - New User Notification to Admin
 - Auto Admin Detection
-- Admin Panel & Broadcast
-- Manual Verification System
+- Admin Panel & Manual Verification
 """
 
 import os
@@ -434,7 +434,7 @@ class AdminActions:
         await update.message.reply_text(f"✅ Added {count} profiles.")
         return ConversationHandler.END
 
-    # BROADCAST SENDER
+    # BROADCAST SENDER (FIXED & SAFE MODE)
     @staticmethod
     async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_USER_ID: return ConversationHandler.END
@@ -453,12 +453,14 @@ class AdminActions:
         for user_row in users:
             user_id = user_row[0]
             try:
+                # REMOVED ParseMode.MARKDOWN for safety - sends plain text/photo
                 if update.message.photo:
-                    await context.bot.send_photo(chat_id=user_id, photo=update.message.photo[-1].file_id, caption=update.message.caption, parse_mode=ParseMode.MARKDOWN)
+                    await context.bot.send_photo(chat_id=user_id, photo=update.message.photo[-1].file_id, caption=update.message.caption)
                 else:
-                    await context.bot.send_message(chat_id=user_id, text=update.message.text, parse_mode=ParseMode.MARKDOWN)
+                    await context.bot.send_message(chat_id=user_id, text=update.message.text)
                 success += 1
-            except Exception:
+            except Exception as e:
+                logger.error(f"Broadcast Error for {user_id}: {e}")
                 blocked += 1
             await asyncio.sleep(0.05)
             
