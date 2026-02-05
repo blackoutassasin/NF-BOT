@@ -37,10 +37,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = os.getenv('7981429496:AAGFBhycrTjCaDBiJitocFnt9z4Bv_dKT1g')
-ADMIN_USER_ID = int(os.getenv('6193794414', '0'))  # Set your Telegram User ID
-BKASH_NUMBER = os.getenv('BKASH_NUMBER', '01784346353')
-NAGAD_NUMBER = os.getenv('NAGAD_NUMBER', 'Not Avilable')
+BOT_TOKEN = '7981429496:AAGFBhycrTjCaDBiJitocFnt9z4Bv_dKT1g'
+ADMIN_USER_ID = 6193794414
+BKASH_NUMBER = '01784346353'
+NAGAD_NUMBER = 'Not Available'
 PRODUCT_PRICE = 50
 DATABASE_PAXXXXXXXXX'lix_bot.db'
 
