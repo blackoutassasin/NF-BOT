@@ -38,9 +38,9 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))
-BKASH_NUMBER = os.getenv('BKASH_NUMBER')
-NAGAD_NUMBER = os.getenv('NAGAD_NUMBER')
+ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))  # Set your Telegram User ID
+BKASH_NUMBER = os.getenv('BKASH_NUMBER', '01XXXXXXXXX')
+NAGAD_NUMBER = os.getenv('NAGAD_NUMBER', '01XXXXXXXXX')
 PRODUCT_PRICE = 50
 DATABASE_PATH = 'netflix_bot.db'
 
@@ -61,11 +61,19 @@ def init_database():
             email TEXT NOT NULL,
             password TEXT NOT NULL,
             profile_pin TEXT NOT NULL,
+            profile_name TEXT DEFAULT 'Default',
             status TEXT DEFAULT 'unsold',
             sold_at TIMESTAMP,
             sold_to_user_id INTEGER
         )
     ''')
+    
+    # Migration: Check if profile_name column exists (for existing databases)
+    try:
+        cursor.execute("SELECT profile_name FROM profiles LIMIT 1")
+    except sqlite3.OperationalError:
+        logger.info("Migrating database: Adding profile_name column...")
+        cursor.execute("ALTER TABLE profiles ADD COLUMN profile_name TEXT DEFAULT 'Default'")
     
     # Sales table
     cursor.execute('''
@@ -161,13 +169,9 @@ class NetflixBot:
     def extract_transaction_info(image: Image.Image) -> Tuple[Optional[str], Optional[int]]:
         """
         Extract Transaction ID and Amount from payment screenshot using OCR
-        
-        Returns:
-            Tuple of (transaction_id, amount) or (None, None) if extraction fails
         """
         try:
             # Preprocess image for better OCR
-            # Convert to grayscale
             image = image.convert('L')
             
             # Apply OCR
@@ -175,7 +179,6 @@ class NetflixBot:
             logger.info(f"OCR extracted text: {text}")
             
             # Extract Transaction ID (10 alphanumeric characters)
-            # Common patterns: TrxID, Transaction ID, TXN ID, etc.
             trx_patterns = [
                 r'(?:TrxID|Transaction ID|TXN ID|TXNID|TRX)\s*:?\s*([A-Z0-9]{10})',
                 r'\b([A-Z0-9]{10})\b',  # Fallback: any 10-char alphanumeric
@@ -186,7 +189,6 @@ class NetflixBot:
                 match = re.search(pattern, text, re.IGNORECASE)
                 if match:
                     transaction_id = match.group(1).upper()
-                    # Validate it looks like a transaction ID (has both letters and numbers)
                     if re.search(r'[A-Z]', transaction_id) and re.search(r'[0-9]', transaction_id):
                         break
             
@@ -279,7 +281,7 @@ class NetflixBot:
             
             # Get an unsold profile
             cursor.execute(
-                "SELECT id, email, password, profile_pin FROM profiles WHERE status = 'unsold' LIMIT 1"
+                "SELECT id, email, password, profile_pin, profile_name FROM profiles WHERE status = 'unsold' LIMIT 1"
             )
             profile = cursor.fetchone()
             
@@ -293,7 +295,7 @@ class NetflixBot:
                 )
                 return ConversationHandler.END
             
-            profile_id, email, password, pin = profile
+            profile_id, email, password, pin, profile_name = profile
             
             # Record the sale
             cursor.execute(
@@ -319,6 +321,7 @@ class NetflixBot:
                 "🎬 *Your Netflix Profile:*\n\n"
                 f"📧 *Email:* `{email}`\n"
                 f"🔑 *Password:* `{password}`\n"
+                f"👤 *Profile Name:* `{profile_name}`\n"
                 f"📍 *Profile PIN:* `{pin}`\n\n"
                 f"⏱ *Valid for:* 1 Month\n"
                 f"💳 *Transaction ID:* `{trx_id}`\n\n"
@@ -394,11 +397,11 @@ class AdminPanel:
         if query.data == 'admin_add_profiles':
             await query.edit_message_text(
                 "➕ *Add Profiles in Bulk*\n\n"
-                "Send profiles in this format (one per line):\n"
-                "`email:password:pin`\n\n"
+                "Send profiles in this NEW format (one per line):\n"
+                "`email:password:pin:profile_name`\n\n"
                 "*Example:*\n"
-                "`user1@gmail.com:pass123:1234`\n"
-                "`user2@gmail.com:pass456:5678`\n\n"
+                "`user1@gmail.com:pass123:1111:MyProfile`\n"
+                "`user2@yahoo.com:pass456:2222:Kids`\n\n"
                 "Send /cancel to abort.",
                 parse_mode='Markdown'
             )
@@ -473,16 +476,16 @@ class AdminPanel:
                 continue
             
             parts = line.split(':')
-            if len(parts) != 3:
-                errors.append(f"Line {line_num}: Invalid format")
+            if len(parts) != 4:
+                errors.append(f"Line {line_num}: Invalid format. Use email:pass:pin:name")
                 continue
             
-            email, password, pin = parts
+            email, password, pin, profile_name = parts
             
             try:
                 cursor.execute(
-                    "INSERT INTO profiles (email, password, profile_pin) VALUES (?, ?, ?)",
-                    (email.strip(), password.strip(), pin.strip())
+                    "INSERT INTO profiles (email, password, profile_pin, profile_name) VALUES (?, ?, ?, ?)",
+                    (email.strip(), password.strip(), pin.strip(), profile_name.strip())
                 )
                 added += 1
             except Exception as e:
