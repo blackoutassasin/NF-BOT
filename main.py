@@ -37,12 +37,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '0'))  # Set your Telegram User ID
-BKASH_NUMBER = os.getenv('BKASH_NUMBER', '01XXXXXXXXX')
-NAGAD_NUMBER = os.getenv('NAGAD_NUMBER', '01XXXXXXXXX')
+BOT_TOKEN = os.getenv('7981429496:AAGFBhycrTjCaDBiJitocFnt9z4Bv_dKT1g')
+ADMIN_USER_ID = int(os.getenv('6193794414', '0'))  # Set your Telegram User ID
+BKASH_NUMBER = os.getenv('BKASH_NUMBER', '01784346353')
+NAGAD_NUMBER = os.getenv('NAGAD_NUMBER', 'Not Avilable')
 PRODUCT_PRICE = 50
-DATABASE_PATH = 'netflix_bot.db'
+DATABASE_PAXXXXXXXXX'lix_bot.db'
 
 # Conversation states
 WAITING_PAYMENT_SCREENSHOT = 1
